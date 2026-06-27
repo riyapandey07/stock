@@ -204,6 +204,12 @@ def _legs_for_ratio(points: list[Pivot], direction: str) -> tuple[float, float, 
     return OX, XA, AB, BC
 
 
+def _format_timestamp(ts: pd.Timestamp) -> str:
+    """Keep intraday timestamps when scanning 1-minute candles."""
+    ts = pd.Timestamp(ts)
+    return ts.isoformat(sep=" ", timespec="minutes")
+
+
 def scan_oxabc_pattern(
     pivots: list[Pivot],
     ratios: dict[str, tuple[float, float]] | None = None,
@@ -243,11 +249,11 @@ def scan_oxabc_pattern(
             rows.append(
                 {
                     "direction": found_direction,
-                    "O_date": O.date.date().isoformat(),
-                    "X_date": X.date.date().isoformat(),
-                    "A_date": A.date.date().isoformat(),
-                    "B_date": B.date.date().isoformat(),
-                    "C_date": C.date.date().isoformat(),
+                    "O_date": _format_timestamp(O.date),
+                    "X_date": _format_timestamp(X.date),
+                    "A_date": _format_timestamp(A.date),
+                    "B_date": _format_timestamp(B.date),
+                    "C_date": _format_timestamp(C.date),
                     "O_price": round(O.price, 4),
                     "X_price": round(X.price, 4),
                     "A_price": round(A.price, 4),

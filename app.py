@@ -40,17 +40,48 @@ with left:
         help="Separate items with spaces, commas, or new lines. Examples: AAPL, MSFT, RELIANCE.NS, https://finance.yahoo.com/quote/TSLA/",
     )
 
+INTRADAY_INTERVALS = ["1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"]
+DAILY_INTERVALS = ["1d", "5d", "1wk", "1mo", "3mo"]
+
 with right:
     st.subheader("Scan settings")
-    period = st.selectbox("Price history", ["6mo", "1y", "2y", "5y", "10y", "max"], index=2)
-    interval = st.selectbox("Candle interval", ["1d", "1wk", "1mo"], index=0)
+    interval = st.selectbox(
+        "Candle interval",
+        INTRADAY_INTERVALS + DAILY_INTERVALS,
+        index=0,
+        help="1m means one-minute candles. Yahoo/yfinance limits very short intraday history, so use a short price-history window for 1m.",
+    )
+
+    if interval == "1m":
+        period_options = ["1d", "5d"]
+        default_period_index = 1
+        st.caption("1-minute mode is best with 1d or 5d of history.")
+    elif interval in INTRADAY_INTERVALS:
+        period_options = ["1d", "5d", "1mo", "3mo"]
+        default_period_index = 2
+    else:
+        period_options = ["6mo", "1y", "2y", "5y", "10y", "max"]
+        default_period_index = 2
+
+    period = st.selectbox("Price history", period_options, index=default_period_index)
     direction = st.selectbox("Pattern direction", ["Bullish", "Bearish", "Both"], index=0)
     pivot_mode = st.selectbox("Pivot source", ["High/Low", "Close"], index=0)
 
 with st.sidebar:
     st.header("Fine tuning")
-    lookback = st.slider("Pivot lookback candles", min_value=2, max_value=30, value=5, step=1)
-    min_move_pct = st.slider("Minimum swing size", min_value=0.0, max_value=0.20, value=0.03, step=0.005, format="%.3f")
+    default_lookback = 5 if interval in INTRADAY_INTERVALS else 5
+    default_min_move = 0.002 if interval == "1m" else 0.005 if interval in INTRADAY_INTERVALS else 0.03
+
+    lookback = st.slider("Pivot lookback candles", min_value=2, max_value=30, value=default_lookback, step=1)
+    min_move_pct = st.slider(
+        "Minimum swing size",
+        min_value=0.0,
+        max_value=0.20,
+        value=default_min_move,
+        step=0.001 if interval in INTRADAY_INTERVALS else 0.005,
+        format="%.3f",
+        help="For 1-minute candles, smaller values like 0.001–0.005 usually work better than daily-chart values.",
+    )
     tolerance = st.slider("Ratio tolerance", min_value=0.0, max_value=0.20, value=0.04, step=0.005, format="%.3f")
 
     st.divider()
@@ -101,11 +132,18 @@ def make_pattern_chart(df: pd.DataFrame, row: pd.Series) -> go.Figure:
         )
     )
 
-    min_date = min(dates)
-    max_date = max(dates)
-    padded = df.loc[(df.index >= min_date - pd.Timedelta(days=20)) & (df.index <= max_date + pd.Timedelta(days=20))]
-    if not padded.empty:
-        fig.update_xaxes(range=[padded.index.min(), padded.index.max()])
+    # Show a candle-based window around the pattern. This works for 1-minute,
+    # daily, weekly, and monthly candles without hard-coding calendar days.
+    try:
+        pattern_positions = df.index.get_indexer(pd.DatetimeIndex(dates), method="nearest")
+        valid_positions = [int(p) for p in pattern_positions if p >= 0]
+        if valid_positions:
+            pad = 80
+            start = max(min(valid_positions) - pad, 0)
+            end = min(max(valid_positions) + pad, len(df) - 1)
+            fig.update_xaxes(range=[df.index[start], df.index[end]])
+    except Exception:
+        pass
 
     fig.update_layout(
         height=620,
@@ -182,11 +220,6 @@ if scan_button:
     )
 
     st.subheader("Chart a match")
-    labels = [
-        f"{i}: {r.ticker} {r.direction} | C {r.C_date} | XA/OX {r._asdict().get('XA/OX', '') if hasattr(r, '_asdict') else ''}"
-        for i, r in enumerate(results[visible_cols].itertuples(index=False))
-    ]
-    # The label above avoids crashing on special column names; build cleaner labels below.
     labels = []
     for i, (_, row) in enumerate(results[visible_cols].iterrows()):
         labels.append(
@@ -212,4 +245,4 @@ if scan_button:
     st.plotly_chart(make_pattern_chart(chart_df, chosen), use_container_width=True)
 
 else:
-    st.info("Paste Yahoo Finance URLs or tickers, adjust settings, then press Scan.")
+    st.info("Paste Yahoo Finance URLs or tickers, choose the 1m candle interval if you want one-minute candles, then press Scan.")

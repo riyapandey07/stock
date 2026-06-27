@@ -2,6 +2,13 @@
 
 A Streamlit app that accepts Yahoo Finance URLs or tickers and scans for the O-X-A-B-C swing pattern from the sketch.
 
+## New in this version
+
+- The default candle interval is now `1m` for one-minute candles.
+- The app keeps full intraday timestamps in the results table.
+- The chart zooms around the detected pattern using nearby candles, so it works better for minute charts.
+- The default minimum swing size is lower for intraday scanning.
+
 ## What it scans for
 
 Default bullish shape:
@@ -40,5 +47,6 @@ streamlit run app.py
 
 - This app uses `yfinance` to download Yahoo Finance price data.
 - Internet access is required when the app runs.
+- For `1m`, use a short price-history setting such as `1d` or `5d`.
 - The scanner is for research and learning, not financial advice.
 - Pattern detection is sensitive to the settings. Try changing lookback, minimum swing size, and tolerance when no matches are found.
