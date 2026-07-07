@@ -6,56 +6,79 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 from pattern_scanner import (
+    CONFIGURED_TICKERS,
     DEFAULT_INTERVAL,
     DEFAULT_MONTHS,
     DEFAULT_RATIOS,
-    STOCK_TICKERS,
     add_indicators,
+    get_tickers_for_universe,
     parse_inputs,
     scan_many,
     scan_ticker,
 )
 
 st.set_page_config(
-    page_title="Gartley XABCD Scanner",
+    page_title="OXABC Scanner",
     page_icon="📊",
     layout="wide",
 )
 
-st.title("📊 Gartley XABCD Scanner - Yahoo Finance")
-st.caption(
-    "Default scan: 1-hour candles, last 3 months, full stock universe from the TXT file via Yahoo Finance."
-)
+st.title("OXABC Scanner")
+st.caption("Default scan: 1-hour candles over 3 months. Data source: Yahoo Finance via yfinance.")
 
 with st.expander("Pattern this app scans for", expanded=False):
     st.markdown(
         """
-        **Bullish Gartley:** `X low → A high → B low → C high → D low`  
-        **Bearish Gartley:** `X high → A low → B high → C low → D high`
+        **Bullish shape:** `O high → X low → A high → B low → C high`  
+        **Bearish inverse:** `O low → X high → A low → B high → C low`
 
-        Default Fibonacci ranges, matching the TXT scanner:
-        - `AB / XA`: 50% to 61.8%
-        - `BC / AB`: 113% to 161%
-        - `CD / BC`: 161% to 224% for complete patterns
+        Default Fibonacci ranges:
+        - `XA / OX`: 0.50 to 0.618
+        - `AB / XA`: 1.13 to 1.618
+        - `BC / AB`: 1.618 to 2.27
 
-        `NEAR_COMPLETE` starts at 75% CD progress. `PARTIAL_XABC` uses the current close as the temporary D point.
+        The scanner can show patterns that are still forming as well as completed patterns.
         """
     )
+
+
+@st.cache_data(ttl=60 * 60, show_spinner=False)
+def cached_universe(universe: str, custom_text: str) -> list[str]:
+    return get_tickers_for_universe(universe, custom_text)
+
+
+@st.cache_data(ttl=15 * 60, show_spinner=False)
+def cached_scan_ticker(**kwargs):
+    return scan_ticker(**kwargs)
+
 
 left, right = st.columns([0.62, 0.38], gap="large")
 
 with left:
-    use_full_universe = st.checkbox(
-        f"Use full TXT stock universe ({len(STOCK_TICKERS)} Yahoo Finance tickers)",
-        value=True,
+    universe = st.selectbox(
+        "Stock universe",
+        [
+            "S&P 500",
+            "Nasdaq-100",
+            "Dow 30",
+            "All US-listed common stocks",
+            "Configured list",
+            "Custom tickers",
+        ],
+        index=0,
+        help="Choose which tickers to scan. The selected symbols are downloaded from Yahoo Finance.",
     )
+
     custom_input = st.text_area(
-        "Optional custom tickers",
-        value="\n".join(STOCK_TICKERS[:20]),
-        height=150,
-        disabled=use_full_universe,
-        help="Used only when the full universe checkbox is off. Separate tickers with spaces, commas, or new lines.",
+        "Custom tickers or Yahoo Finance URLs",
+        value="AAPL\nMSFT\nNVDA\nTSLA\nSPY",
+        height=130,
+        disabled=universe != "Custom tickers",
+        help="Used only when Stock universe is set to Custom tickers.",
     )
+
+    if universe == "Configured list":
+        st.caption(f"Configured list contains {len(CONFIGURED_TICKERS)} symbols.")
 
 with right:
     st.subheader("Scan settings")
@@ -64,20 +87,43 @@ with right:
         "Candle interval",
         interval_options,
         index=interval_options.index(DEFAULT_INTERVAL),
-        help="Default is 1h to match your requested hourly scan.",
     )
-    months = st.number_input("Yahoo Finance history window, months", min_value=1, max_value=12, value=DEFAULT_MONTHS, step=1)
-    direction = st.selectbox("Pattern direction", ["Both", "BULLISH", "BEARISH"], index=0)
+    months = st.number_input("Price history window, months", min_value=1, max_value=12, value=DEFAULT_MONTHS, step=1)
+    direction = st.selectbox("Pattern direction", ["Both", "Bullish", "Bearish"], index=0)
+    max_tickers = st.number_input(
+        "Max tickers to scan, 0 = no limit",
+        min_value=0,
+        max_value=10000,
+        value=0,
+        step=25,
+        help="Useful for testing a large universe before scanning everything.",
+    )
 
 with st.sidebar:
+    st.header("Pattern settings")
+    pivot_mode = st.selectbox("Pivot source", ["High/Low", "Close"], index=0)
+    lookback = st.slider("Pivot lookback candles", min_value=2, max_value=30, value=5, step=1)
+    min_move_pct = st.slider(
+        "Minimum swing size",
+        min_value=0.0,
+        max_value=0.20,
+        value=0.005,
+        step=0.001,
+        format="%.3f",
+    )
+    tolerance = st.slider("Ratio tolerance", min_value=0.0, max_value=0.20, value=0.04, step=0.005, format="%.3f")
+    recent_candles = st.slider("Only show patterns ending within recent candles", min_value=25, max_value=500, value=120, step=25)
+    forming_threshold = st.slider("BC forming threshold", min_value=0.10, max_value=1.00, value=0.75, step=0.05)
+    near_complete_threshold = st.slider("Near-complete threshold", min_value=0.50, max_value=1.00, value=0.90, step=0.05)
+
+    st.divider()
     st.header("Ratio ranges")
-    st.caption("Defaults match the TXT file.")
-    ab_low = st.number_input("AB/XA low", value=float(DEFAULT_RATIOS["AB_XA"][0]), step=0.01)
-    ab_high = st.number_input("AB/XA high", value=float(DEFAULT_RATIOS["AB_XA"][1]), step=0.01)
-    bc_low = st.number_input("BC/AB low", value=float(DEFAULT_RATIOS["BC_AB"][0]), step=0.01)
-    bc_high = st.number_input("BC/AB high", value=float(DEFAULT_RATIOS["BC_AB"][1]), step=0.01)
-    cd_low = st.number_input("CD/BC complete low", value=float(DEFAULT_RATIOS["CD_BC"][0]), step=0.01)
-    cd_high = st.number_input("CD/BC complete high", value=float(DEFAULT_RATIOS["CD_BC"][1]), step=0.01)
+    xa_low = st.number_input("XA/OX low", value=float(DEFAULT_RATIOS["XA_over_OX"][0]), step=0.01)
+    xa_high = st.number_input("XA/OX high", value=float(DEFAULT_RATIOS["XA_over_OX"][1]), step=0.01)
+    ab_low = st.number_input("AB/XA low", value=float(DEFAULT_RATIOS["AB_over_XA"][0]), step=0.01)
+    ab_high = st.number_input("AB/XA high", value=float(DEFAULT_RATIOS["AB_over_XA"][1]), step=0.01)
+    bc_low = st.number_input("BC/AB low", value=float(DEFAULT_RATIOS["BC_over_AB"][0]), step=0.01)
+    bc_high = st.number_input("BC/AB high", value=float(DEFAULT_RATIOS["BC_over_AB"][1]), step=0.01)
 
     st.divider()
     st.header("Chart overlays")
@@ -85,21 +131,19 @@ with st.sidebar:
         "Show moving averages",
         ["hourly", "daily", "weekly"],
         default=["hourly", "daily", "weekly"],
-        help="Daily/weekly MAs are approximated on the hourly chart. Longer weekly MAs may be blank with only 3 months of data.",
     )
 
 ratios = {
-    "AB_XA": (ab_low, ab_high),
-    "BC_AB": (bc_low, bc_high),
-    "CD_BC": (cd_low, cd_high),
+    "XA_over_OX": (xa_low, xa_high),
+    "AB_over_XA": (ab_low, ab_high),
+    "BC_over_AB": (bc_low, bc_high),
 }
 
 scan_button = st.button("Scan Yahoo Finance data", type="primary", use_container_width=True)
 
 
-def make_gartley_chart(df: pd.DataFrame, row: pd.Series, selected_mas: list[str]) -> go.Figure:
+def make_oxabc_chart(df: pd.DataFrame, row: pd.Series, selected_mas: list[str]) -> go.Figure:
     chart_df = add_indicators(df)
-
     fig = make_subplots(
         rows=3,
         cols=1,
@@ -107,7 +151,7 @@ def make_gartley_chart(df: pd.DataFrame, row: pd.Series, selected_mas: list[str]
         vertical_spacing=0.04,
         row_heights=[0.62, 0.18, 0.20],
         subplot_titles=(
-            f"{row['ticker']} - {interval} candles with Gartley XABCD overlay",
+            f"{row['ticker']} - {interval} candles with OXABC overlay",
             "Volume",
             "RSI",
         ),
@@ -128,10 +172,11 @@ def make_gartley_chart(df: pd.DataFrame, row: pd.Series, selected_mas: list[str]
         col=1,
     )
 
-    labels = ["X", "A", "B", "C", "D"]
+    labels = ["O", "X", "A", "B", "C"]
     dates = [pd.to_datetime(row[f"{label}_date"]) for label in labels]
     prices = [float(row[f"{label}_price"]) for label in labels]
-    color = "lime" if row["direction"] == "BULLISH" else "red"
+    color = "lime" if row["direction"] == "Bullish" else "red"
+    dash = "solid" if row["status"] == "COMPLETE" else "dash"
 
     fig.add_trace(
         go.Scatter(
@@ -140,67 +185,52 @@ def make_gartley_chart(df: pd.DataFrame, row: pd.Series, selected_mas: list[str]
             mode="lines+markers+text",
             text=labels,
             textposition="top center",
-            line=dict(color=color, width=2),
-            marker=dict(size=8),
-            name=f"{row['direction']} XABCD",
-            showlegend=True,
+            line=dict(color=color, width=2.5, dash=dash),
+            marker=dict(size=9),
+            name=f"{row['direction']} {row['status']}",
         ),
         row=1,
         col=1,
     )
 
-    ma_specs = []
-    if "hourly" in selected_mas:
-        ma_specs.extend([
-            ("HMA_50", "50 HMA", dict(color="#FF6B35", width=1.5)),
-            ("HMA_100", "100 HMA", dict(color="#F7931E", width=1.5)),
-            ("HMA_200", "200 HMA", dict(color="#FDC830", width=1.5)),
-        ])
-    if "daily" in selected_mas:
-        ma_specs.extend([
-            ("DMA_50", "50 DMA", dict(color="#4ECDC4", width=1.5, dash="dash")),
-            ("DMA_100", "100 DMA", dict(color="#44A08D", width=1.5, dash="dash")),
-            ("DMA_200", "200 DMA", dict(color="#1ABC9C", width=1.5, dash="dash")),
-        ])
-    if "weekly" in selected_mas:
-        ma_specs.extend([
-            ("WMA_50", "50 WMA", dict(color="#A8E6CF", width=1.5, dash="dot")),
-            ("WMA_100", "100 WMA", dict(color="#87CEEB", width=1.5, dash="dot")),
-            ("WMA_200", "200 WMA", dict(color="#B0E0E6", width=1.5, dash="dot")),
-        ])
-
-    for column, name, line in ma_specs:
-        if column in chart_df.columns and chart_df[column].notna().any():
-            fig.add_trace(
-                go.Scatter(
-                    x=chart_df["Date"],
-                    y=chart_df[column],
-                    name=name,
-                    line=line,
-                    connectgaps=True,
-                ),
-                row=1,
-                col=1,
-            )
-
-    fig.add_trace(
-        go.Bar(
-            x=chart_df["Date"],
-            y=chart_df["Volume"],
-            name="Volume",
-            marker_color="lightblue",
-        ),
-        row=2,
+    # Target C zone
+    fig.add_hrect(
+        y0=float(row["Target C Low"]),
+        y1=float(row["Target C High"]),
+        line_width=0,
+        fillcolor="LightGreen" if row["direction"] == "Bullish" else "LightCoral",
+        opacity=0.12,
+        row=1,
         col=1,
     )
 
+    ma_groups = {
+        "hourly": [("HMA_50", "50 HMA", "#FF6B35", "solid"), ("HMA_100", "100 HMA", "#F7931E", "solid"), ("HMA_200", "200 HMA", "#FDC830", "solid")],
+        "daily": [("DMA_50", "50 DMA", "#4ECDC4", "dash"), ("DMA_100", "100 DMA", "#44A08D", "dash"), ("DMA_200", "200 DMA", "#1ABC9C", "dash")],
+        "weekly": [("WMA_50", "50 WMA", "#A8E6CF", "dot"), ("WMA_100", "100 WMA", "#87CEEB", "dot"), ("WMA_200", "200 WMA", "#B0E0E6", "dot")],
+    }
+    for group in selected_mas:
+        for column, name, color_value, dash_value in ma_groups.get(group, []):
+            if column in chart_df.columns:
+                fig.add_trace(
+                    go.Scatter(
+                        x=chart_df["Date"],
+                        y=chart_df[column],
+                        name=name,
+                        line=dict(color=color_value, width=1.4, dash=dash_value),
+                        connectgaps=True,
+                    ),
+                    row=1,
+                    col=1,
+                )
+
     fig.add_trace(
-        go.Scatter(
-            x=chart_df["Date"],
-            y=chart_df["RSI"],
-            name="RSI",
-            line=dict(width=1.5, color="#FFD700"),
-        ),
+        go.Bar(x=chart_df["Date"], y=chart_df["Volume"], name="Volume", marker_color="lightblue"),
+        row=2,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=chart_df["Date"], y=chart_df["RSI"], name="RSI", line=dict(width=1.5, color="#FFD700")),
         row=3,
         col=1,
     )
@@ -209,12 +239,13 @@ def make_gartley_chart(df: pd.DataFrame, row: pd.Series, selected_mas: list[str]
     fig.update_yaxes(range=[0, 100], row=3, col=1)
 
     try:
-        positions = chart_df["Date"].searchsorted(pd.DatetimeIndex(dates))
-        if len(positions):
+        positions = chart_df["Date"].searchsorted(pd.to_datetime(dates))
+        positions = [int(p) for p in positions if 0 <= int(p) < len(chart_df)]
+        if positions:
             pad = 80
-            start = max(int(min(positions)) - pad, 0)
-            end = min(int(max(positions)) + pad, len(chart_df) - 1)
-            fig.update_xaxes(range=[chart_df.iloc[start]["Date"], chart_df.iloc[end]["Date"]])
+            start = max(min(positions) - pad, 0)
+            end = min(max(positions) + pad, len(chart_df) - 1)
+            fig.update_xaxes(range=[chart_df.loc[start, "Date"], chart_df.loc[end, "Date"]])
     except Exception:
         pass
 
@@ -225,125 +256,131 @@ def make_gartley_chart(df: pd.DataFrame, row: pd.Series, selected_mas: list[str]
         hovermode="x unified",
         xaxis_rangeslider_visible=False,
         dragmode="pan",
-        margin=dict(l=15, r=15, t=60, b=15),
         title=(
-            f"{row['ticker']} {row['direction']} {row['type']} | "
-            f"AB={row['AB/XA %']:.1f}% BC={row['BC/AB %']:.1f}% CD={row['CD/BC %']:.1f}%"
+            f"{row['ticker']} {row['direction']} {row['status']} | "
+            f"BC progress {row['BC Progress %']}%"
         ),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=15, r=15, t=80, b=15),
     )
     fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
-    fig.update_yaxes(title_text="Price ₹", row=1, col=1)
+    fig.update_yaxes(title_text="Price", row=1, col=1)
     fig.update_yaxes(title_text="Volume", row=2, col=1)
     fig.update_yaxes(title_text="RSI", row=3, col=1)
     return fig
 
 
 if scan_button:
-    tickers = STOCK_TICKERS if use_full_universe else parse_inputs(custom_input)
-
-    if not tickers:
-        st.warning("Enter at least one ticker or use the full TXT stock universe.")
+    try:
+        tickers = cached_universe(universe, custom_input)
+    except Exception as exc:
+        st.error(f"Could not load the selected stock universe: {exc}")
         st.stop()
 
-    progress = st.progress(0)
-    status_text = st.empty()
-    log_box = st.empty()
-    recent_lines: list[str] = []
+    if universe == "Custom tickers":
+        tickers = parse_inputs(custom_input)
 
-    def progress_callback(i: int, total: int, ticker: str, count: int, error: str | None):
-        progress.progress(i / total)
-        if error:
-            line = f"[{i}/{total}] {ticker}: error - {error}"
-        else:
-            line = f"[{i}/{total}] {ticker}: {count} pattern(s)"
-        recent_lines.append(line)
-        status_text.write(line)
-        log_box.code("\n".join(recent_lines[-12:]))
+    if max_tickers > 0:
+        tickers = tickers[: int(max_tickers)]
 
-    with st.spinner(f"Downloading and scanning {len(tickers)} Yahoo Finance ticker(s)..."):
-        results, errors, data_by_ticker, patterns_by_ticker = scan_many(
-            tickers,
-            months=int(months),
-            interval=interval,
-            direction=direction,
-            ratios=ratios,
-            progress_callback=progress_callback,
-        )
+    if not tickers:
+        st.warning("No tickers found for the selected stock universe.")
+        st.stop()
 
-    st.session_state["results"] = results
-    st.session_state["errors"] = errors
-    st.session_state["data_by_ticker"] = data_by_ticker
-    st.session_state["patterns_by_ticker"] = patterns_by_ticker
+    st.write(f"Scanning {len(tickers)} ticker(s).")
+    progress_bar = st.progress(0)
+    progress_text = st.empty()
 
-    progress.progress(1.0)
-    status_text.write("Scan complete")
+    def update_progress(i: int, total: int, ticker: str) -> None:
+        progress_bar.progress(i / total)
+        progress_text.write(f"Scanning {i}/{total}: {ticker}")
 
-results = st.session_state.get("results", pd.DataFrame())
-errors = st.session_state.get("errors", {})
-data_by_ticker = st.session_state.get("data_by_ticker", {})
+    results, errors = scan_many(
+        tickers,
+        months=months,
+        interval=interval,
+        lookback=lookback,
+        min_move_pct=min_move_pct,
+        tolerance=tolerance,
+        direction=direction,
+        pivot_mode=pivot_mode,
+        ratios=ratios,
+        forming_threshold=forming_threshold,
+        near_complete_threshold=near_complete_threshold,
+        recent_candles=recent_candles,
+        progress_callback=update_progress,
+    )
+    progress_text.write("Scan complete.")
 
-if errors:
-    with st.expander(f"Tickers with errors ({len(errors)})"):
-        for ticker, message in errors.items():
-            st.write(f"**{ticker}:** {message}")
+    if errors:
+        with st.expander(f"Tickers with errors ({len(errors)})"):
+            for ticker, message in errors.items():
+                st.write(f"**{ticker}:** {message}")
 
-if results.empty:
-    st.info("Press Scan to download Yahoo Finance data and search for Gartley XABCD patterns.")
-    st.stop()
+    if results.empty:
+        st.info("No OXABC patterns found with the current settings. Try lowering the minimum swing size, increasing tolerance, or scanning more tickers.")
+        st.stop()
 
-st.success(f"Found {len(results)} Gartley pattern(s) across {results['ticker'].nunique()} ticker(s).")
+    results = results.sort_values(["score", "BC Progress %", "C_date"], ascending=[False, False, False]).reset_index(drop=True)
+    st.success(f"Found {len(results)} OXABC pattern(s) across {results['ticker'].nunique()} ticker(s).")
 
-visible_cols = [
-    "ticker",
-    "direction",
-    "type",
-    "score",
-    "X_date",
-    "A_date",
-    "B_date",
-    "C_date",
-    "D_date",
-    "X_price",
-    "A_price",
-    "B_price",
-    "C_price",
-    "D_price",
-    "AB/XA %",
-    "BC/AB %",
-    "CD/BC %",
-]
-visible_cols = [c for c in visible_cols if c in results.columns]
-st.dataframe(results[visible_cols], use_container_width=True, hide_index=True)
-
-st.download_button(
-    "Download results as CSV",
-    data=results[visible_cols].to_csv(index=False).encode("utf-8"),
-    file_name="gartley_xabcd_scan_results.csv",
-    mime="text/csv",
-)
-
-st.subheader("Chart a detected Gartley pattern")
-labels = []
-for i, row in results.iterrows():
-    labels.append(
-        f"{i}: {row['ticker']} {row['direction']} {row['type']} | D {row['D_date']} | "
-        f"AB {row['AB/XA %']:.1f}% BC {row['BC/AB %']:.1f}% CD {row['CD/BC %']:.1f}%"
+    visible_cols = [
+        "ticker",
+        "direction",
+        "status",
+        "O_date",
+        "X_date",
+        "A_date",
+        "B_date",
+        "C_date",
+        "O_price",
+        "X_price",
+        "A_price",
+        "B_price",
+        "C_price",
+        "XA/OX",
+        "AB/XA",
+        "BC/AB",
+        "BC Progress %",
+        "Target C Low",
+        "Target C High",
+        "score",
+    ]
+    st.dataframe(results[visible_cols], use_container_width=True, hide_index=True)
+    st.download_button(
+        "Download results as CSV",
+        data=results[visible_cols].to_csv(index=False).encode("utf-8"),
+        file_name="oxabc_scan_results.csv",
+        mime="text/csv",
     )
 
-choice = st.selectbox("Choose a detected pattern", labels)
-chosen_index = int(choice.split(":", 1)[0])
-chosen = results.iloc[chosen_index]
-chart_df = data_by_ticker.get(chosen["ticker"])
-
-if chart_df is None or chart_df.empty:
-    with st.spinner("Reloading chart data from Yahoo Finance..."):
-        _, chart_df, _ = scan_ticker(
-            chosen["ticker"],
-            months=int(months),
-            interval=interval,
-            direction=direction,
-            ratios=ratios,
+    st.subheader("Chart a detected OXABC pattern")
+    labels = []
+    for i, (_, row) in enumerate(results[visible_cols].iterrows()):
+        labels.append(
+            f"{i}: {row['ticker']} {row['direction']} {row['status']} | C {row['C_date']} | "
+            f"BC progress {row['BC Progress %']}%"
         )
 
-st.plotly_chart(make_gartley_chart(chart_df, chosen, selected_mas), use_container_width=True)
+    choice = st.selectbox("Choose a detected pattern", labels)
+    chosen_index = int(choice.split(":", 1)[0])
+    chosen = results.iloc[chosen_index]
+
+    with st.spinner("Loading chart data..."):
+        _, chart_df, _ = cached_scan_ticker(
+            ticker=chosen["ticker"],
+            months=months,
+            interval=interval,
+            lookback=lookback,
+            min_move_pct=min_move_pct,
+            tolerance=tolerance,
+            direction=direction,
+            pivot_mode=pivot_mode,
+            ratios=ratios,
+            forming_threshold=forming_threshold,
+            near_complete_threshold=near_complete_threshold,
+            recent_candles=recent_candles,
+        )
+    st.plotly_chart(make_oxabc_chart(chart_df, chosen, selected_mas), use_container_width=True)
+else:
+    st.info("Choose a stock universe and press Scan to search for OXABC patterns.")
