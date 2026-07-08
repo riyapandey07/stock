@@ -141,8 +141,44 @@ ratios = {
 
 scan_button = st.button("Scan Yahoo Finance data", type="primary", use_container_width=True)
 
+VISIBLE_COLS = [
+    "ticker",
+    "direction",
+    "status",
+    "O_date",
+    "X_date",
+    "A_date",
+    "B_date",
+    "C_date",
+    "O_price",
+    "X_price",
+    "A_price",
+    "B_price",
+    "C_price",
+    "XA/OX",
+    "AB/XA",
+    "BC/AB",
+    "BC Progress %",
+    "Target C Low",
+    "Target C High",
+    "score",
+]
 
-def make_oxabc_chart(df: pd.DataFrame, row: pd.Series, selected_mas: list[str]) -> go.Figure:
+
+if "scan_results" not in st.session_state:
+    st.session_state.scan_results = None
+if "scan_errors" not in st.session_state:
+    st.session_state.scan_errors = {}
+if "scan_settings" not in st.session_state:
+    st.session_state.scan_settings = None
+
+
+def make_oxabc_chart(
+    df: pd.DataFrame,
+    row: pd.Series,
+    selected_mas: list[str],
+    interval_label: str,
+) -> go.Figure:
     chart_df = add_indicators(df)
     fig = make_subplots(
         rows=3,
@@ -151,7 +187,7 @@ def make_oxabc_chart(df: pd.DataFrame, row: pd.Series, selected_mas: list[str]) 
         vertical_spacing=0.04,
         row_heights=[0.62, 0.18, 0.20],
         subplot_titles=(
-            f"{row['ticker']} - {interval} candles with OXABC overlay",
+            f"{row['ticker']} - {interval_label} candles with OXABC overlay",
             "Volume",
             "RSI",
         ),
@@ -312,75 +348,91 @@ if scan_button:
     )
     progress_text.write("Scan complete.")
 
+    st.session_state.scan_errors = errors
+
+    if results.empty:
+        st.session_state.scan_results = None
+        st.session_state.scan_settings = None
+        st.info("No OXABC patterns found with the current settings. Try lowering the minimum swing size, increasing tolerance, or scanning more tickers.")
+        st.stop()
+
+    results = results.sort_values(["score", "BC Progress %", "C_date"], ascending=[False, False, False]).reset_index(drop=True)
+
+    # Store the scan so interacting with widgets below does not erase or rerun it.
+    st.session_state.scan_results = results
+    st.session_state.scan_settings = {
+        "months": months,
+        "interval": interval,
+        "lookback": lookback,
+        "min_move_pct": min_move_pct,
+        "tolerance": tolerance,
+        "direction": direction,
+        "pivot_mode": pivot_mode,
+        "ratios": ratios,
+        "forming_threshold": forming_threshold,
+        "near_complete_threshold": near_complete_threshold,
+        "recent_candles": recent_candles,
+    }
+    st.session_state.selected_pattern_index = 0
+
+results = st.session_state.scan_results
+scan_settings = st.session_state.scan_settings
+errors = st.session_state.scan_errors
+
+if results is None or scan_settings is None:
+    st.info("Choose a stock universe and press Scan to search for OXABC patterns.")
+else:
     if errors:
         with st.expander(f"Tickers with errors ({len(errors)})"):
             for ticker, message in errors.items():
                 st.write(f"**{ticker}:** {message}")
 
-    if results.empty:
-        st.info("No OXABC patterns found with the current settings. Try lowering the minimum swing size, increasing tolerance, or scanning more tickers.")
-        st.stop()
-
-    results = results.sort_values(["score", "BC Progress %", "C_date"], ascending=[False, False, False]).reset_index(drop=True)
     st.success(f"Found {len(results)} OXABC pattern(s) across {results['ticker'].nunique()} ticker(s).")
-
-    visible_cols = [
-        "ticker",
-        "direction",
-        "status",
-        "O_date",
-        "X_date",
-        "A_date",
-        "B_date",
-        "C_date",
-        "O_price",
-        "X_price",
-        "A_price",
-        "B_price",
-        "C_price",
-        "XA/OX",
-        "AB/XA",
-        "BC/AB",
-        "BC Progress %",
-        "Target C Low",
-        "Target C High",
-        "score",
-    ]
-    st.dataframe(results[visible_cols], use_container_width=True, hide_index=True)
+    st.dataframe(results[VISIBLE_COLS], use_container_width=True, hide_index=True)
     st.download_button(
         "Download results as CSV",
-        data=results[visible_cols].to_csv(index=False).encode("utf-8"),
+        data=results[VISIBLE_COLS].to_csv(index=False).encode("utf-8"),
         file_name="oxabc_scan_results.csv",
         mime="text/csv",
     )
 
     st.subheader("Chart a detected OXABC pattern")
-    labels = []
-    for i, (_, row) in enumerate(results[visible_cols].iterrows()):
-        labels.append(
-            f"{i}: {row['ticker']} {row['direction']} {row['status']} | C {row['C_date']} | "
-            f"BC progress {row['BC Progress %']}%"
+    pattern_options = list(range(len(results)))
+
+    def pattern_label(i: int) -> str:
+        row = results.iloc[i]
+        return (
+            f"{i}: {row['ticker']} {row['direction']} {row['status']} | "
+            f"C {row['C_date']} | BC progress {row['BC Progress %']}%"
         )
 
-    choice = st.selectbox("Choose a detected pattern", labels)
-    chosen_index = int(choice.split(":", 1)[0])
-    chosen = results.iloc[chosen_index]
+    if st.session_state.get("selected_pattern_index", 0) not in pattern_options:
+        st.session_state.selected_pattern_index = 0
+
+    chosen_index = st.selectbox(
+        "Choose a detected pattern",
+        pattern_options,
+        format_func=pattern_label,
+        key="selected_pattern_index",
+    )
+    chosen = results.iloc[int(chosen_index)]
 
     with st.spinner("Loading chart data..."):
         _, chart_df, _ = cached_scan_ticker(
             ticker=chosen["ticker"],
-            months=months,
-            interval=interval,
-            lookback=lookback,
-            min_move_pct=min_move_pct,
-            tolerance=tolerance,
-            direction=direction,
-            pivot_mode=pivot_mode,
-            ratios=ratios,
-            forming_threshold=forming_threshold,
-            near_complete_threshold=near_complete_threshold,
-            recent_candles=recent_candles,
+            months=scan_settings["months"],
+            interval=scan_settings["interval"],
+            lookback=scan_settings["lookback"],
+            min_move_pct=scan_settings["min_move_pct"],
+            tolerance=scan_settings["tolerance"],
+            direction=scan_settings["direction"],
+            pivot_mode=scan_settings["pivot_mode"],
+            ratios=scan_settings["ratios"],
+            forming_threshold=scan_settings["forming_threshold"],
+            near_complete_threshold=scan_settings["near_complete_threshold"],
+            recent_candles=scan_settings["recent_candles"],
         )
-    st.plotly_chart(make_oxabc_chart(chart_df, chosen, selected_mas), use_container_width=True)
-else:
-    st.info("Choose a stock universe and press Scan to search for OXABC patterns.")
+    st.plotly_chart(
+        make_oxabc_chart(chart_df, chosen, selected_mas, scan_settings["interval"]),
+        use_container_width=True,
+    )
